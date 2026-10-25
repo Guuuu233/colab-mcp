@@ -68,11 +68,21 @@ async def test_authenticated_reconnect_replaces_old_socket():
         client1 = await websockets.connect(url, **options)
         assert server.connection_live.is_set()
 
+        old_socket = server._active_websocket
         client2 = await websockets.connect(url, **options)
         try:
             await asyncio.wait_for(client1.wait_closed(), timeout=2)
             assert client1.close_code == 1001
-            assert server.connection_live.is_set()
+
+            async def replacement_ready():
+                while (
+                    server._active_websocket is None
+                    or server._active_websocket is old_socket
+                    or not server.connection_live.is_set()
+                ):
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(replacement_ready(), timeout=2)
             assert server.connection_lock.locked()
 
             # Verify the shared MCP writer now delivers only to the new tab.
@@ -127,12 +137,22 @@ async def test_successive_authenticated_reconnects_keep_last_tab_alive():
         clients = []
         try:
             for _ in range(3):
+                old_socket = server._active_websocket
                 client = await websockets.connect(url, **options)
                 clients.append(client)
                 if len(clients) > 1:
                     await asyncio.wait_for(clients[-2].wait_closed(), timeout=2)
                     assert clients[-2].close_code == 1001
-                assert server.connection_live.is_set()
+
+                async def latest_ready():
+                    while (
+                        server._active_websocket is None
+                        or server._active_websocket is old_socket
+                        or not server.connection_live.is_set()
+                    ):
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(latest_ready(), timeout=2)
 
             pong = await clients[-1].ping()
             await asyncio.wait_for(pong, timeout=2)
